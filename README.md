@@ -26,9 +26,11 @@ commands/
 ## Requirements
 
 - **Node.js** v18+
-- **Ollama** running locally with `qwen2.5-coder:7b` model
-- A **Discord bot token** ([Developer Portal](https://discord.com/developers/applications))
-- A **GitLab personal access token** with `api` scope
+- **Discord bot token** ([Developer Portal](https://discord.com/developers/applications))
+- **GitLab personal access token** with `api` scope
+- AI provider:
+   - **Copilot CLI** (default), or
+   - **Ollama** for fully local inference
 
 ## Setup
 
@@ -45,16 +47,36 @@ commands/
    Create a `.env` file:
 
    ```env
-   DISCORD_TOKEN=your_discord_bot_token
-   ALLOWED_DISCORD_CHANNEL=your_channel_id
+   # gitlab
+   GITLAB_HOST=https://gitlab.edot.id
    GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
    GITLAB_PROJECT_ID=12345
+
+   # ai provider: "copilot" or "ollama"
+   AI_PROVIDER=copilot
+   GH_PATH=/Users/you/.local/bin/gh
+   GH_TOKEN=gho_xxxxxxxxxxxxxxxxxxxx
+   COPILOT_MODEL=gpt-5.3-codex
+   # OLLAMA_MODEL=qwen2.5-coder:14b
+
+   # discord
+   DISCORD_TOKEN=your_discord_bot_token
+   ALLOWED_DISCORD_CHANNEL=your_channel_id
    ```
 
-3. **Start Ollama**
+3. **Provider setup**
+
+   Copilot CLI (default):
 
    ```bash
-   ollama run qwen2.5-coder:7b
+   gh auth login
+   gh copilot -p "hello" --allow-all-tools
+   ```
+
+   Ollama (optional local provider):
+
+   ```bash
+   ollama run qwen2.5-coder:14b
    ```
 
 4. **Run the bot**
@@ -87,6 +109,12 @@ The bot will:
 6. Commit the corrected file
 7. Open a Merge Request
 8. Reply with the MR link ✅
+
+## Notes
+
+- If `AI_PROVIDER=copilot`, generation runs through GitHub Copilot CLI (cloud model execution).
+- If `AI_PROVIDER=ollama`, generation runs locally via Ollama.
+- You can pick Copilot model in `.env` using `COPILOT_MODEL`.
 
 ### Manual Merge Request
 
