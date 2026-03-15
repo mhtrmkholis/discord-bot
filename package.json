@@ -1,0 +1,19 @@
+{
+  "name": "discord-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@gitbeaker/node": "^35.8.1",
+    "discord.js": "^14.25.1",
+    "dotenv": "^16.6.1",
+    "node-fetch": "^3.3.2"
+  }
+}
