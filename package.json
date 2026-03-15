@@ -2,14 +2,16 @@
   "name": "discord-bot",
   "version": "1.0.0",
   "type": "module",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
+  "main": "bot.js",
+  "description": "Discord bot with AI-powered code fixes and GitLab MR automation",
+  "author": "Kholis",
   "license": "ISC",
-  "description": "",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@gitbeaker/node": "^35.8.1",
     "discord.js": "^14.25.1",

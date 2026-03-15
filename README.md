@@ -1,89 +1,70 @@
 # Discord Bot — AI + GitLab Pipeline
 
-A Discord bot that generates AI-powered code fixes and pushes them to GitLab as Merge Requests — all from a single command.
+A Discord bot that generates AI-powered code fixes and pushes them to GitLab as
+Merge Requests — all from a single command.
 
 **Created by Kholis** during Ramadhan 2026 in Bandung, Indonesia.
 
+---
+
 ## Features
 
-- `!ai <prompt>` — Ask the AI anything; get a formatted code reply in Discord.
-- `!fix <bug description>` — Full pipeline: AI identifies the file → fetches it from GitLab → generates a fix → pushes to a branch → opens a Merge Request → sends the MR link back.
-- `!mr <json>` — Manually create a GitLab Merge Request from a JSON payload.
+| Command | Description |
+| ------- | ----------- |
+| `!ai <prompt>` | Ask the AI anything — replies with a formatted code block. |
+| `!fix <bug description>` | Full pipeline: identify file → fetch from GitLab → AI fix → branch → commit → MR → reply with link. |
+| `!mr <json>` | Manually create a GitLab Merge Request from a JSON payload. |
 
 ## Project Structure
 
 ```
-bot.js                ← Entry point (client setup + command routing)
-ai.js                 ← AI helpers (callAI, extractCode, formatCodeReply)
-gitlab.js             ← GitLab API (createMR)
-system-prompt.js      ← System prompt for the AI model
+bot.js                 ← Entry point (client + command routing)
+ai.js                  ← AI providers (Copilot CLI / Ollama)
+gitlab.js              ← GitLab API (files, branches, MRs)
+system-prompt.js       ← System + analysis prompts
+utils/
+  discord.js           ← Safe message editing helper
 commands/
-  ai.js               ← !ai command handler
-  fix.js              ← !fix command handler
-  mr.js               ← !mr command handler
+  ai.js                ← !ai handler
+  fix.js               ← !fix handler
+  mr.js                ← !mr handler
 ```
 
 ## Requirements
 
-- **Node.js** v18+
-- **Discord bot token** ([Developer Portal](https://discord.com/developers/applications))
+- **Node.js** ≥ 18
+- **Discord bot token** — [Developer Portal](https://discord.com/developers/applications)
 - **GitLab personal access token** with `api` scope
-- AI provider:
-   - **Copilot CLI** (default), or
-   - **Ollama** for fully local inference
+- **AI provider** (pick one):
+  - [GitHub Copilot CLI](https://gh.io/copilot-cli) (default — cloud)
+  - [Ollama](https://ollama.com) (fully local)
 
-## Setup
+## Quick Start
 
-1. **Clone & install**
+```bash
+git clone https://github.com/mhtrmkholis/discord-bot.git
+cd discord-bot
+npm install
+cp .env.example .env   # then fill in your tokens
+npm start
+```
 
-   ```bash
-   git clone <your-repo-url>
-   cd discord-bot
-   npm install
-   ```
+## Environment Variables
 
-2. **Configure environment**
+Copy `.env.example` → `.env` and fill in:
 
-   Create a `.env` file:
-
-   ```env
-   # gitlab
-   GITLAB_HOST=https://gitlab.edot.id
-   GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
-   GITLAB_PROJECT_ID=12345
-
-   # ai provider: "copilot" or "ollama"
-   AI_PROVIDER=copilot
-   GH_PATH=/Users/you/.local/bin/gh
-   GH_TOKEN=gho_xxxxxxxxxxxxxxxxxxxx
-   COPILOT_MODEL=gpt-5.3-codex
-   # OLLAMA_MODEL=qwen2.5-coder:14b
-
-   # discord
-   DISCORD_TOKEN=your_discord_bot_token
-   ALLOWED_DISCORD_CHANNEL=your_channel_id
-   ```
-
-3. **Provider setup**
-
-   Copilot CLI (default):
-
-   ```bash
-   gh auth login
-   gh copilot -p "hello" --allow-all-tools
-   ```
-
-   Ollama (optional local provider):
-
-   ```bash
-   ollama run qwen2.5-coder:14b
-   ```
-
-4. **Run the bot**
-
-   ```bash
-   node bot.js
-   ```
+| Variable | Required | Description |
+| -------- | -------- | ----------- |
+| `DISCORD_TOKEN` | yes | Bot token from Discord Developer Portal |
+| `ALLOWED_DISCORD_CHANNEL` | yes | Channel ID the bot listens in |
+| `GITLAB_HOST` | yes | GitLab instance URL (e.g. `https://gitlab.com`) |
+| `GITLAB_TOKEN` | yes | Personal access token with `api` scope |
+| `GITLAB_PROJECT_ID` | yes | Numeric project ID (Settings → General) |
+| `AI_PROVIDER` | no | `copilot` (default) or `ollama` |
+| `GH_PATH` | no | Absolute path to `gh` binary |
+| `GH_TOKEN` | no | GitHub token for Copilot auth |
+| `COPILOT_MODEL` | no | Model name (see list in `.env.example`) |
+| `OLLAMA_MODEL` | no | Ollama model name (default: `qwen2.5-coder:14b`) |
 
 ## Usage
 
@@ -103,24 +84,24 @@ The bot will:
 
 1. List all files in the GitLab repo
 2. Ask AI which file contains the bug
-3. Fetch that file's current code from GitLab
-4. Ask AI to generate the fix
-5. Create a branch `fix/<timestamp>`
+3. Fetch the file's current code from GitLab
+4. Generate the fix
+5. Create branch `fix/<timestamp>`
 6. Commit the corrected file
 7. Open a Merge Request
 8. Reply with the MR link ✅
 
-## Notes
-
-- If `AI_PROVIDER=copilot`, generation runs through GitHub Copilot CLI (cloud model execution).
-- If `AI_PROVIDER=ollama`, generation runs locally via Ollama.
-- You can pick Copilot model in `.env` using `COPILOT_MODEL`.
-
 ### Manual Merge Request
 
 ```
-!mr {"projectId":123,"branchName":"ai-fix-1","codePath":"src/file.js","codeContent":"console.log('fixed')"}
+!mr {"projectId":123,"branchName":"fix-1","codePath":"src/file.js","codeContent":"..."}
 ```
+
+## Notes
+
+- `AI_PROVIDER=copilot` — model runs in the cloud via GitHub Copilot CLI.
+- `AI_PROVIDER=ollama` — model runs locally on your machine.
+- Switch models anytime by changing `COPILOT_MODEL` or `OLLAMA_MODEL` in `.env`.
 
 ## License
 

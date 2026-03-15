@@ -1,20 +1,12 @@
 import { Gitlab } from "@gitbeaker/node"
 
+const GITLAB_HOST = process.env.GITLAB_HOST || "https://gitlab.com"
+
 const api = new Gitlab({
-  token: process.env.GITLAB_TOKEN
+  host: GITLAB_HOST,
+  token: process.env.GITLAB_TOKEN,
 })
 
-/**
- * Create a branch, commit AI-generated code, and open a Merge Request.
- * @param {object} opts
- * @param {number|string} opts.projectId
- * @param {string} opts.branchName
- * @param {string} opts.codePath    - file to update in the repo
- * @param {string} opts.codeContent - new file content
- * @param {string} [opts.commitMessage]
- * @param {string} [opts.mrTitle]
- * @param {(status:string)=>void} [opts.onStatus] - progress callback
- */
 export async function getFileContent(projectId, filePath, ref = "main") {
   const file = await api.RepositoryFiles.show(projectId, filePath, ref)
   return Buffer.from(file.content, "base64").toString("utf-8")
@@ -25,6 +17,9 @@ export async function listFiles(projectId, path = "", ref = "main") {
   return tree.filter((item) => item.type === "blob").map((item) => item.path)
 }
 
+/**
+ * Create a branch, commit code, and open a Merge Request.
+ */
 export async function createMR({
   projectId,
   branchName,

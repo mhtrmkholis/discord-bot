@@ -1,5 +1,6 @@
 import { callAI, formatCodeReply } from "../ai.js"
 import { systemPrompt } from "../system-prompt.js"
+import { safeEdit } from "../utils/discord.js"
 
 export async function handleAI(message) {
   const userPrompt = message.content.replace("!ai", "").trim()
@@ -9,14 +10,14 @@ export async function handleAI(message) {
     return
   }
 
-  message.reply("Thinking… :smiley_cat: ")
+  const status = await message.reply("Thinking… 🤖")
 
   try {
     const prompt = `${systemPrompt}\n\nUser request:\n${userPrompt}`
     const aiRaw = await callAI(prompt)
-    message.channel.send(formatCodeReply(aiRaw))
+    await safeEdit(status, formatCodeReply(aiRaw))
   } catch (err) {
     console.error(err)
-    message.reply("Error contacting AI.")
+    await safeEdit(status, "Error contacting AI.")
   }
 }
