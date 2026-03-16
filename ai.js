@@ -19,13 +19,14 @@ function isRetriableCopilotError(err) {
 
 // ---- Copilot CLI provider ----
 
-function callCopilotOnce(prompt) {
+function callCopilotOnce(prompt, model) {
   return new Promise((resolve, reject) => {
     const ghPath = process.env.GH_PATH || "gh"
     const safePrompt = String(prompt || "").slice(0, COPILOT_MAX_PROMPT_CHARS)
     const args = ["copilot", "-p", safePrompt, "--allow-all-tools", "--silent"]
-    if (COPILOT_MODEL) {
-      args.push("--model", COPILOT_MODEL)
+    const useModel = model || COPILOT_MODEL
+    if (useModel) {
+      args.push("--model", useModel)
     }
 
     const child = spawn(ghPath, args, {
@@ -83,11 +84,11 @@ function callCopilotOnce(prompt) {
   })
 }
 
-async function callCopilot(prompt) {
+async function callCopilot(prompt, model) {
   let lastErr
   for (let attempt = 0; attempt <= COPILOT_RETRIES; attempt += 1) {
     try {
-      return await callCopilotOnce(prompt)
+      return await callCopilotOnce(prompt, model)
     } catch (err) {
       lastErr = err
       if (!isRetriableCopilotError(err) || attempt === COPILOT_RETRIES) {
@@ -103,8 +104,8 @@ async function callCopilot(prompt) {
 
 const OLLAMA_BASE = process.env.OLLAMA_BASE_URL || "http://localhost:11434"
 
-async function callOllama(prompt, system) {
-  const model = process.env.OLLAMA_MODEL || "qwen2.5-coder:14b"
+async function callOllama(prompt, system, model) {
+  model = model || process.env.OLLAMA_MODEL || "qwen2.5-coder:14b"
   const messages = []
   if (system) messages.push({ role: "system", content: system })
   messages.push({ role: "user", content: prompt })
@@ -126,19 +127,29 @@ async function callOllama(prompt, system) {
 
 // ---- Public API ----
 
+const COPILOT_LIGHT_MODEL = (process.env.COPILOT_LIGHT_MODEL || "gpt-4o-mini").trim()
+const OLLAMA_LIGHT_MODEL = (process.env.OLLAMA_LIGHT_MODEL || "qwen2.5-coder:7b").trim()
+
 /**
  * Call the configured AI provider.
  * @param {string} prompt — the user/task prompt
  * @param {string} [system] — optional system prompt (used as separate system message for Ollama)
+ * @param {{ light?: boolean }} [options] — if light=true, use a smaller/free model
  */
-export async function callAI(prompt, system) {
-  console.log(AI_PROVIDER)
+export async function callAI(prompt, system, options = {}) {
+  const lightModel = options.light
+    ? (AI_PROVIDER === "copilot" ? COPILOT_LIGHT_MODEL : OLLAMA_LIGHT_MODEL)
+    : undefined
   if (AI_PROVIDER === "copilot") {
-    // Copilot CLI doesn't support a separate system message, so prepend it
     const full = system ? system + "\n\n" + prompt : prompt
-    return callCopilot(full)
+    return callCopilot(full, lightModel)
   }
-  return callOllama(prompt, system)
+  return callOllama(prompt, system, lightModel)
+}
+
+/** Return the light model name for display purposes */
+export function getLightModelName() {
+  return AI_PROVIDER === "copilot" ? COPILOT_LIGHT_MODEL : OLLAMA_LIGHT_MODEL
 }
 
 export function extractCode(raw) {

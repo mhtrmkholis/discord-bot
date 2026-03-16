@@ -1,3 +1,4 @@
+import { getLightModelName } from "../ai.js"
 import { sanitize } from "../utils/discord.js"
 
 export async function handleConfig(message) {
@@ -5,6 +6,7 @@ export async function handleConfig(message) {
   const model = provider === "ollama"
     ? (process.env.OLLAMA_MODEL || "qwen2.5-coder:14b")
     : (process.env.COPILOT_MODEL || "(default)")
+  const lightModel = getLightModelName()
   const repo = process.env.LOCAL_REPO_PATH ? "local" : "remote (GitLab API)"
   const localPath = process.env.LOCAL_REPO_PATH || "—"
   const gitlabHost = process.env.GITLAB_HOST || "—"
@@ -17,7 +19,8 @@ export async function handleConfig(message) {
     `⚙️ **Bot Configuration**`,
     ``,
     `**AI Provider:** \`${provider}\``,
-    `**Model:** \`${model}\``,
+    `**Model (fix):** \`${model}\``,
+    `**Model (ai/config):** \`${lightModel}\``,
     `**Repo Mode:** \`${repo}\``,
     ``,
     `**GitLab Host:** \`${sanitize(gitlabHost)}\``,

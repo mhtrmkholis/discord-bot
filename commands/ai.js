@@ -46,7 +46,7 @@ export async function handleAI(message) {
     }
 
     const prompt = `You have access to project context below. Use it to answer the question.\nIf the question asks where something is located, return likely file paths first.${repoContext}\n\nUser question:\n${userPrompt}`
-    const aiRaw = await callAI(prompt, repoQaPrompt)
+    const aiRaw = await callAI(prompt, repoQaPrompt, { light: true })
     await safeEdit(status, sanitize(aiRaw))
   } catch (err) {
     console.error(err)
