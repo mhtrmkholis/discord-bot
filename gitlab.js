@@ -23,7 +23,7 @@ const SEARCHABLE_EXTENSIONS = new Set([
 
 const CACHE_TTL_MS = 60_000
 let _cachedRelPaths = null   // string[] of posix-relative paths
-let _cachedFullPaths = null  // string[] of absolute paths (same order)
+let _cachedFullPaths = null  // string[] of absolute paths (same order, local only)
 let _cachedSet = null        // Set<string> for O(1) includes
 let _cacheTs = 0
 
@@ -49,16 +49,33 @@ async function walkLocalFiles(root) {
   return { relPaths, fullPaths }
 }
 
-async function getCachedTree() {
+/** Fetch the full recursive file tree from GitLab API (gitbeaker auto-paginates) */
+async function fetchGitLabTree(projectId, ref = "main") {
+  const tree = await api.Repositories.tree(projectId, {
+    ref,
+    recursive: true,
+    per_page: 100,
+  })
+  return tree.filter((item) => item.type === "blob").map((item) => item.path)
+}
+
+async function getCachedTree(projectId) {
   if (_cachedRelPaths && Date.now() - _cacheTs < CACHE_TTL_MS) {
     return { relPaths: _cachedRelPaths, fullPaths: _cachedFullPaths, fileSet: _cachedSet }
   }
-  const { relPaths, fullPaths } = await walkLocalFiles(LOCAL_REPO)
-  _cachedRelPaths = relPaths
-  _cachedFullPaths = fullPaths
-  _cachedSet = new Set(relPaths)
+  if (LOCAL_REPO) {
+    const { relPaths, fullPaths } = await walkLocalFiles(LOCAL_REPO)
+    _cachedRelPaths = relPaths
+    _cachedFullPaths = fullPaths
+    _cachedSet = new Set(relPaths)
+  } else {
+    const relPaths = await fetchGitLabTree(projectId)
+    _cachedRelPaths = relPaths
+    _cachedFullPaths = null  // no local paths when using API
+    _cachedSet = new Set(relPaths)
+  }
   _cacheTs = Date.now()
-  return { relPaths, fullPaths, fileSet: _cachedSet }
+  return { relPaths: _cachedRelPaths, fullPaths: _cachedFullPaths, fileSet: _cachedSet }
 }
 
 export async function getFileContent(projectId, filePath, ref = "main") {
@@ -72,11 +89,16 @@ export async function getFileContent(projectId, filePath, ref = "main") {
 export async function listFiles(projectId, subpath = "", ref = "main") {
   if (LOCAL_REPO) {
     if (!subpath) {
-      const { relPaths } = await getCachedTree()
+      const { relPaths } = await getCachedTree(projectId)
       return relPaths
     }
     const root = path.join(LOCAL_REPO, subpath)
     const { relPaths } = await walkLocalFiles(root)
+    return relPaths
+  }
+  // GitLab API — use cached tree for full listing, API for subpath
+  if (!subpath) {
+    const { relPaths } = await getCachedTree(projectId)
     return relPaths
   }
   const tree = await api.Repositories.tree(projectId, { path: subpath, ref, recursive: true })
@@ -84,25 +106,21 @@ export async function listFiles(projectId, subpath = "", ref = "main") {
 }
 
 /** O(1) file-exists check against the cached tree */
-export async function fileExistsInRepo(filePath) {
-  if (LOCAL_REPO) {
-    const { fileSet } = await getCachedTree()
-    return fileSet.has(filePath)
-  }
-  return false
+export async function fileExistsInRepo(filePath, projectId) {
+  const { fileSet } = await getCachedTree(projectId)
+  return fileSet.has(filePath)
 }
 
 export async function searchLocalContent(keywords, options = {}) {
-  if (!LOCAL_REPO) return []
-
   const terms = [...new Set((keywords || []).map((k) => String(k || "").toLowerCase()).filter(Boolean))]
   if (!terms.length) return []
 
+  const projectId = options.projectId || process.env.GITLAB_PROJECT_ID
   const maxFiles = Number(options.maxFiles || 8000)
   const maxMatches = Number(options.maxMatches || 20)
   const maxBytes = Number(options.maxBytes || 120_000)
 
-  const { relPaths, fullPaths } = await getCachedTree()
+  const { relPaths, fullPaths } = await getCachedTree(projectId)
   const out = []
 
   // Build prioritised scan order: path-matching files first
@@ -119,20 +137,26 @@ export async function searchLocalContent(keywords, options = {}) {
   }
 
   let scannedFiles = 0
-  const BATCH = 40
+  const BATCH = LOCAL_REPO ? 40 : 10  // smaller batches for API to limit concurrent requests
+  const scanLimit = LOCAL_REPO ? maxFiles : Math.min(maxFiles, 200) // cap API scans
   for (let b = 0; b < scanOrder.length && out.length < maxMatches; b += BATCH) {
     const batch = scanOrder.slice(b, b + BATCH)
     const results = await Promise.all(batch.map(async (idx) => {
       const rel = relPaths[idx]
-      const full = fullPaths[idx]
-      const ext = path.extname(full).toLowerCase()
+      const ext = path.extname(rel).toLowerCase()
       if (!SEARCHABLE_EXTENSIONS.has(ext)) return null
       if (rel.includes("/dist/") || rel.includes("/build/") || rel.includes("/coverage/")) return null
 
       try {
-        const stat = await fs.stat(full)
-        if (stat.size > maxBytes) return null
-        const content = await fs.readFile(full, "utf8")
+        let content
+        if (LOCAL_REPO && fullPaths) {
+          const stat = await fs.stat(fullPaths[idx])
+          if (stat.size > maxBytes) return null
+          content = await fs.readFile(fullPaths[idx], "utf8")
+        } else {
+          content = await getFileContent(projectId, rel)
+          if (content.length > maxBytes) return null
+        }
         const lc = content.toLowerCase()
         if (!terms.some((t) => lc.includes(t))) return null
 
@@ -155,7 +179,7 @@ export async function searchLocalContent(keywords, options = {}) {
         out.push(hit)
       }
     }
-    if (scannedFiles > maxFiles) break
+    if (scannedFiles > scanLimit) break
   }
 
   return out
@@ -168,17 +192,17 @@ export async function searchLocalContent(keywords, options = {}) {
  * Returns top files sorted by total score, each with multiple code snippets.
  */
 export async function findCandidateFiles(keywords, options = {}) {
-  if (!LOCAL_REPO) return []
-
+  const projectId = options.projectId || process.env.GITLAB_PROJECT_ID
   const terms = [...new Set((keywords || []).map((k) => String(k || "").toLowerCase()).filter(Boolean))]
   if (!terms.length) return []
 
   const maxResults = Number(options.maxResults || 15)
-  const maxScan = Number(options.maxScan || 500)
+  // For API mode, scan fewer files since each is an HTTP request
+  const maxScan = LOCAL_REPO ? Number(options.maxScan || 500) : Math.min(Number(options.maxScan || 500), 60)
   const maxBytes = 200_000
   const snippetLines = Number(options.snippetLines || 3)
 
-  const { relPaths, fullPaths } = await getCachedTree()
+  const { relPaths, fullPaths } = await getCachedTree(projectId)
 
   // Phase 1: score files by path keyword overlap (no I/O)
   const scored = []
@@ -202,14 +226,19 @@ export async function findCandidateFiles(keywords, options = {}) {
   scored.sort((a, b) => b.pathScore - a.pathScore)
   const toScan = scored.slice(0, maxScan)
 
-  // Phase 2: read candidates and score by content keyword overlap (skip stat, just read)
-  const BATCH = 50
+  // Phase 2: read candidates and score by content keyword overlap
+  const BATCH = LOCAL_REPO ? 50 : 10
   const results = []
   for (let b = 0; b < toScan.length; b += BATCH) {
     const slice = toScan.slice(b, b + BATCH)
     const batchResults = await Promise.all(slice.map(async ({ idx, pathScore }) => {
       try {
-        const content = await fs.readFile(fullPaths[idx], "utf8")
+        let content
+        if (LOCAL_REPO && fullPaths) {
+          content = await fs.readFile(fullPaths[idx], "utf8")
+        } else {
+          content = await getFileContent(projectId, relPaths[idx])
+        }
         if (content.length > maxBytes) return null
         const lc = content.toLowerCase()
         const contentHits = terms.filter((t) => lc.includes(t)).length
@@ -245,8 +274,8 @@ export async function findCandidateFiles(keywords, options = {}) {
  * For example, "same color as paid status in StatusCell" → finds files with "StatusCell" in the name.
  * Returns an array of relative paths.
  */
-export async function findReferencedFiles(text, { exclude = [], limit = 4 } = {}) {
-  if (!LOCAL_REPO) return []
+export async function findReferencedFiles(text, { exclude = [], limit = 4, projectId } = {}) {
+  projectId = projectId || process.env.GITLAB_PROJECT_ID
 
   // Extract potential file/component names: PascalCase, camelCase, or kebab-case words ≥ 4 chars
   const tokens = new Set()
@@ -273,7 +302,7 @@ export async function findReferencedFiles(text, { exclude = [], limit = 4 } = {}
   const JUNK_DIRS = /\/(\.jest-cache|node_modules|\.next|dist|build|coverage|\.turbo|__mocks__)\//
 
   const excludeSet = new Set(exclude.map((p) => p.toLowerCase()))
-  const { relPaths } = await getCachedTree()
+  const { relPaths } = await getCachedTree(projectId)
   const matches = []
 
   for (const rp of relPaths) {
@@ -320,11 +349,11 @@ export async function findReferencedFiles(text, { exclude = [], limit = 4 } = {}
  * List files in the same directory as the given file path (siblings).
  * Reads up to limit files from the cached tree.
  */
-export async function getSiblingFiles(filePath, limit = 6) {
-  if (!LOCAL_REPO) return []
+export async function getSiblingFiles(filePath, limit = 6, projectId) {
+  projectId = projectId || process.env.GITLAB_PROJECT_ID
   const dir = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : ""
   const prefix = dir ? dir + "/" : ""
-  const { relPaths } = await getCachedTree()
+  const { relPaths } = await getCachedTree(projectId)
   const siblings = []
   for (const p of relPaths) {
     if (p === filePath) continue

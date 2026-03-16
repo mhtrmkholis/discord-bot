@@ -276,11 +276,13 @@ export async function handleFix(message) {
   try {
     const keywords = pickKeywords(bugDesc)
 
-    // Two-phase candidate search: path → content scoring
-    let candidates = []
-    if (process.env.LOCAL_REPO_PATH) {
-      candidates = await findCandidateFiles(keywords, { maxResults: 15, maxScan: 500, snippetLines: 4 })
-    }
+    // Two-phase candidate search (works for both local and GitLab API)
+    const candidates = await findCandidateFiles(keywords, {
+      projectId,
+      maxResults: 15,
+      maxScan: 500,
+      snippetLines: 4,
+    })
 
     let codePath
 
