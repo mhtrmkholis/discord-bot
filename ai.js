@@ -101,22 +101,43 @@ async function callCopilot(prompt) {
 
 // ---- Ollama provider ----
 
-async function callOllama(prompt) {
+const OLLAMA_BASE = process.env.OLLAMA_BASE_URL || "http://localhost:11434"
+
+async function callOllama(prompt, system) {
   const model = process.env.OLLAMA_MODEL || "qwen2.5-coder:14b"
-  const res = await fetch("http://localhost:11434/api/generate", {
+  const messages = []
+  if (system) messages.push({ role: "system", content: system })
+  messages.push({ role: "user", content: prompt })
+
+  const res = await fetch(`${OLLAMA_BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, prompt, stream: false }),
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: false,
+      options: { temperature: 0.1, num_predict: -1 },
+    }),
   })
+  if (!res.ok) throw new Error(`Ollama returned ${res.status}: ${await res.text()}`)
   const data = await res.json()
-  return (data.response || "").trim()
+  return (data.message?.content || "").trim()
 }
 
 // ---- Public API ----
 
-export async function callAI(prompt) {
-  if (AI_PROVIDER === "copilot") return callCopilot(prompt)
-  return callOllama(prompt)
+/**
+ * Call the configured AI provider.
+ * @param {string} prompt — the user/task prompt
+ * @param {string} [system] — optional system prompt (used as separate system message for Ollama)
+ */
+export async function callAI(prompt, system) {
+  if (AI_PROVIDER === "copilot") {
+    // Copilot CLI doesn't support a separate system message, so prepend it
+    const full = system ? system + "\n\n" + prompt : prompt
+    return callCopilot(full)
+  }
+  return callOllama(prompt, system)
 }
 
 export function extractCode(raw) {

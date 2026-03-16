@@ -200,8 +200,8 @@ export async function handleFollowUp(message) {
       ? `\n\nReference files (find the EXACT values, colors, class names from these files and use them):\n${pending.referenceContext}`
       : ""
 
-    const refinementPrompt = `${systemPrompt}\n\nFile: ${pending.codePath}\nOriginal code (before any changes):\n\`\`\`\n${pending.originalCode}\n\`\`\`\n\nCurrent proposed code:\n\`\`\`\n${pending.code}\n\`\`\`${refSection}\n\nConversation:\n${historyContext}\n\nApply the latest instruction. When the user says "same as" or "match" another file, find the EXACT values from the reference files above. Change ONLY what was asked — do not touch imports, do not reorganize code. Return ONLY the full corrected file.`
-    const aiRaw = await callAI(refinementPrompt)
+    const refinementPrompt = `File: ${pending.codePath}\nOriginal code (before any changes):\n\`\`\`\n${pending.originalCode}\n\`\`\`\n\nCurrent proposed code:\n\`\`\`\n${pending.code}\n\`\`\`${refSection}\n\nConversation:\n${historyContext}\n\nApply the latest instruction. When the user says "same as" or "match" another file, find the EXACT values from the reference files above. Change ONLY what was asked — do not touch imports, do not reorganize code. Return ONLY the full corrected file.`
+    const aiRaw = await callAI(refinementPrompt, systemPrompt)
     const { code } = extractCode(aiRaw)
 
     if (!code) {
@@ -308,8 +308,8 @@ export async function handleFix(message) {
         const restPaths = candidates.slice(8).map((c) => c.path).join("\n")
 
         await safeEdit(status, "🔍 Identifying affected file…")
-        const identifyPrompt = `${analysisPrompt}\n\nBug description: ${bugDesc}\n\nTop candidates (with code snippets):\n${snippetList}${restPaths ? "\n\nOther candidates:\n" + restPaths : ""}`
-        codePath = (await callAI(identifyPrompt)).replaceAll(/[`"'\n]/g, "").trim()
+        const identifyPrompt = `Bug description: ${bugDesc}\n\nTop candidates (with code snippets):\n${snippetList}${restPaths ? "\n\nOther candidates:\n" + restPaths : ""}`
+        codePath = (await callAI(identifyPrompt, analysisPrompt)).replaceAll(/[`"'\n]/g, "").trim()
 
         // Validate — must be one of the candidates
         const candidateSet = new Set(candidates.map((c) => c.path))
@@ -326,8 +326,8 @@ export async function handleFix(message) {
       const filesToSend = ranked.slice(0, 120)
 
       await safeEdit(status, "🔍 Identifying affected file…")
-      const identifyPrompt = `${analysisPrompt}\n\nBug description: ${bugDesc}\n\nRepository files:\n${filesToSend.join("\n")}`
-      codePath = (await callAI(identifyPrompt)).replaceAll(/[`"'\n]/g, "").trim()
+      const identifyPrompt = `Bug description: ${bugDesc}\n\nRepository files:\n${filesToSend.join("\n")}`
+      codePath = (await callAI(identifyPrompt, analysisPrompt)).replaceAll(/[`"'\n]/g, "").trim()
 
       if (!codePath || !fileSet.has(codePath)) {
         const fallbackPath = filesToSend.find((p) => fileSet.has(p))
@@ -362,8 +362,8 @@ export async function handleFix(message) {
       .join("\n")
 
     await safeEdit(status, "🤖 Generating fix…")
-    const fixPrompt = `${systemPrompt}\n\nFile to fix: ${codePath}\nCurrent code:\n\`\`\`\n${currentCode}\n\`\`\`\n\nBug description: ${bugDesc}${referenceContext ? `\n\nReference files (use these to find the EXACT values, colors, class names, patterns to copy — but do NOT change imports or structure of the target file):\n${referenceContext}` : ""}\n\nIMPORTANT: When the bug says "same as" or "match", find the EXACT values from the reference files and use them. Your output must be the EXACT same file with ONLY the bug-related lines changed. Do not touch imports, do not reorganize, do not rename.\nReturn ONLY the full corrected file for ${codePath}.`
-    const aiRaw = await callAI(fixPrompt)
+    const fixPrompt = `File to fix: ${codePath}\nCurrent code:\n\`\`\`\n${currentCode}\n\`\`\`\n\nBug description: ${bugDesc}${referenceContext ? `\n\nReference files (use these to find the EXACT values, colors, class names, patterns to copy — but do NOT change imports or structure of the target file):\n${referenceContext}` : ""}\n\nIMPORTANT: When the bug says "same as" or "match", find the EXACT values from the reference files and use them. Your output must be the EXACT same file with ONLY the bug-related lines changed. Do not touch imports, do not reorganize, do not rename.\nReturn ONLY the full corrected file for ${codePath}.`
+    const aiRaw = await callAI(fixPrompt, systemPrompt)
     const { code } = extractCode(aiRaw)
 
     if (!code) {
