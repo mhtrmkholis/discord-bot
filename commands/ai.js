@@ -1,55 +1,46 @@
 import { callAI } from "../ai.js"
 import { repoQaPrompt } from "../system-prompt.js"
-import { getFileContent, findCandidateFiles } from "../gitlab.js"
+import { getFileContent, getCachedTree, scoreByPath } from "../gitlab.js"
 import { sanitize, safeEdit, pickKeywords } from "../utils/discord.js"
 
 export async function handleAI(message) {
-  const userPrompt = message.content.replace("!ai", "").trim()
-
-  if (!userPrompt) {
-    message.reply("Please provide a prompt.")
-    return
-  }
+  const q = message.content.replace("!ai", "").trim()
+  if (!q) return message.reply("Usage: `!ai your question here`")
 
   const projectId = process.env.GITLAB_PROJECT_ID
-  const status = await message.reply("Thinking… 🤖")
+  const status = await message.reply("🤖 Thinking…")
 
   try {
-    const keywords = pickKeywords(userPrompt)
+    const keywords = pickKeywords(q)
+    const { relPaths } = await getCachedTree(projectId)
 
-    let repoContext = ""
+    // Fast path-only scoring (no file reads) — instant from cache
+    const topPaths = scoreByPath(relPaths, keywords)
+      .slice(0, 12)
+      .map(({ idx }) => relPaths[idx])
 
-    // Two-phase search: path → content scoring with snippets (works for both local and API)
-    const candidates = await findCandidateFiles(keywords, { projectId, maxResults: 10, maxScan: 300, snippetLines: 3 })
+    // Read only top 3 files in parallel for context
+    const snippets = (await Promise.all(
+      topPaths.slice(0, 3).map(async (p) => {
+        try {
+          const c = await getFileContent(projectId, p)
+          return `### ${p}\n\`\`\`\n${c.slice(0, 1200)}\n\`\`\``
+        } catch { return null }
+      })
+    )).filter(Boolean)
 
-    if (candidates.length) {
-      const candidateList = candidates
-        .map((c) => `${c.path}\n${c.snippets.map((s) => "  " + s).join("\n")}`)
-        .join("\n")
-      repoContext = "\n\nTop code matches:\n" + candidateList
-    }
+    const context = topPaths.length
+      ? `\n\nMatching files:\n${topPaths.join("\n")}${snippets.length ? "\n\n" + snippets.join("\n\n") : ""}`
+      : ""
 
-    // Read up to 4 best-matched files in parallel for deeper context
-    const toRead = candidates.slice(0, 4)
-    if (toRead.length) {
-      const snippets = (await Promise.all(
-        toRead.map(async (c) => {
-          try {
-            const content = await getFileContent(projectId, c.path)
-            return `\n### ${c.path}\n\`\`\`\n${content.slice(0, 1200)}\n\`\`\``
-          } catch { return null }
-        })
-      )).filter(Boolean)
-      if (snippets.length) {
-        repoContext += "\n\nRelevant file contents:" + snippets.join("\n")
-      }
-    }
-
-    const prompt = `You have access to project context below. Use it to answer the question.\nIf the question asks where something is located, return likely file paths first.${repoContext}\n\nUser question:\n${userPrompt}`
-    const aiRaw = await callAI(prompt, repoQaPrompt, { light: true })
+    const aiRaw = await callAI(
+      `Answer based on the project context below.${context}\n\nQuestion: ${q}`,
+      repoQaPrompt,
+      { light: true },
+    )
     await safeEdit(status, sanitize(aiRaw))
   } catch (err) {
     console.error(err)
-    await safeEdit(status, `❌ ${sanitize(err.message || "Error contacting AI.")}`)
+    await safeEdit(status, `❌ ${sanitize(err.message || "AI error")}`)
   }
 }

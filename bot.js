@@ -4,51 +4,38 @@ import { handleFix, handleContinue, handleFixInteraction, handleFollowUp, hasAct
 import { handleMR } from "./commands/mr.js"
 import { handleAI } from "./commands/ai.js"
 import { handleConfig } from "./commands/config.js"
-
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN
-const ALLOWED_DISCORD_CHANNEL = process.env.ALLOWED_DISCORD_CHANNEL
-
-if (!DISCORD_TOKEN) {
-  console.error("Missing DISCORD_TOKEN. Add it to .env or export it in your shell.")
-  process.exit(1)
-}
+import { warmCache } from "./gitlab.js"
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
 })
+
+const CHANNEL = process.env.ALLOWED_DISCORD_CHANNEL
 
 client.once("clientReady", () => {
   console.log("Bot is online 🚀")
+  if (process.env.GITLAB_PROJECT_ID) warmCache(process.env.GITLAB_PROJECT_ID)
 })
 
 client.on("messageCreate", async (message) => {
-  if (message.author.bot) return
-  if (message.channel.id !== ALLOWED_DISCORD_CHANNEL) return
+  if (message.author.bot || message.channel.id !== CHANNEL) return
 
-  if (message.content.startsWith("!fix")) return handleFix(message)
-  if (message.content.startsWith("!continue")) return handleContinue(message)
-  if (message.content.startsWith("!mr"))  return handleMR(message)
-  if (message.content.startsWith("!ai"))  return handleAI(message)
-  if (message.content.startsWith("!config")) return handleConfig(message)
+  const text = message.content
+  if (text.startsWith("!fix"))      return handleFix(message)
+  if (text.startsWith("!continue")) return handleContinue(message)
+  if (text.startsWith("!mr"))       return handleMR(message)
+  if (text.startsWith("!ai"))       return handleAI(message)
+  if (text.startsWith("!config"))   return handleConfig(message)
 
-  // Non-command message: check if user has an active fix session
-  if (hasActiveSession(message.channel.id, message.author.id)) {
-    return handleFollowUp(message)
-  }
+  if (hasActiveSession(message.channel.id, message.author.id)) return handleFollowUp(message)
 })
 
-// Handle button clicks (Create MR, Discard, Show More)
 client.on("interactionCreate", async (interaction) => {
-  if (!interaction.isButton()) return
-  if (interaction.channel.id !== ALLOWED_DISCORD_CHANNEL) return
+  if (!interaction.isButton() || interaction.channel.id !== CHANNEL) return
   if (interaction.customId.startsWith("fix_")) return handleFixInteraction(interaction)
 })
 
-client.login(DISCORD_TOKEN).catch((err) => {
-  console.error("Discord login failed:", err.message)
+client.login(process.env.DISCORD_TOKEN).catch((err) => {
+  console.error("Login failed:", err.message)
   process.exit(1)
 })

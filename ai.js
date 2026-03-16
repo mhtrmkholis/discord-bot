@@ -1,166 +1,125 @@
 import { spawn } from "node:child_process"
 import fetch from "node-fetch"
 
+// ---- Config (read once at startup) ----
+
 const AI_PROVIDER = (process.env.AI_PROVIDER || "copilot").toLowerCase()
 const COPILOT_MODEL = (process.env.COPILOT_MODEL || "").trim()
+const COPILOT_LIGHT_MODEL = (process.env.COPILOT_LIGHT_MODEL || "gpt-4o-mini").trim()
 const COPILOT_RETRIES = Number(process.env.COPILOT_RETRIES || 2)
 const COPILOT_TIMEOUT_MS = Number(process.env.COPILOT_TIMEOUT_MS || 120_000)
 const COPILOT_MAX_PROMPT_CHARS = Number(process.env.COPILOT_MAX_PROMPT_CHARS || 50_000)
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
+const OLLAMA_BASE = process.env.OLLAMA_BASE_URL || "http://localhost:11434"
+const OLLAMA_MODEL = (process.env.OLLAMA_MODEL || "qwen2.5-coder:14b").trim()
+const OLLAMA_LIGHT_MODEL = (process.env.OLLAMA_LIGHT_MODEL || "qwen2.5-coder:7b").trim()
 
-function isRetriableCopilotError(err) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// ---- Copilot CLI ----
+
+function isRetriable(err) {
   const msg = String(err?.message || "").toLowerCase()
   const code = String(err?.code || "").toUpperCase()
   return code === "EPIPE" || code === "ETIMEDOUT" || msg.includes("epipe") || msg.includes("timed out")
 }
 
-// ---- Copilot CLI provider ----
-
-function callCopilotOnce(prompt, model) {
+function copilotOnce(prompt, model) {
   return new Promise((resolve, reject) => {
     const ghPath = process.env.GH_PATH || "gh"
-    const safePrompt = String(prompt || "").slice(0, COPILOT_MAX_PROMPT_CHARS)
-    const args = ["copilot", "-p", safePrompt, "--allow-all-tools", "--silent"]
-    const useModel = model || COPILOT_MODEL
-    if (useModel) {
-      args.push("--model", useModel)
-    }
+    const safe = String(prompt || "").slice(0, COPILOT_MAX_PROMPT_CHARS)
+    const args = ["copilot", "-p", safe, "--allow-all-tools", "--silent"]
+    const m = model || COPILOT_MODEL
+    if (m) args.push("--model", m)
 
-    const child = spawn(ghPath, args, {
-      stdio: ["pipe", "pipe", "pipe"],
-    })
+    const child = spawn(ghPath, args, { stdio: ["pipe", "pipe", "pipe"] })
+    let stdout = "", stderr = "", done = false, epipe = false
 
-    let stdout = ""
-    let stderr = ""
-    let settled = false
-    let sawStdinEpipe = false
-
-    const timeout = setTimeout(() => {
-      try {
-        child.kill("SIGTERM")
-      } catch {
-        // Ignore kill failures
-      }
-      const err = new Error(`gh copilot timed out after ${COPILOT_TIMEOUT_MS}ms`)
-      err.code = "ETIMEDOUT"
-      finish(err)
+    const timer = setTimeout(() => {
+      try { child.kill("SIGTERM") } catch {}
+      const e = new Error(`gh copilot timed out after ${COPILOT_TIMEOUT_MS}ms`)
+      e.code = "ETIMEDOUT"
+      fin(e)
     }, COPILOT_TIMEOUT_MS)
 
     child.stdout.on("data", (d) => { stdout += d })
     child.stderr.on("data", (d) => { stderr += d })
 
-    const finish = (err, code) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
+    const fin = (err, code) => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
       if (err) return reject(err)
       if (code !== 0) {
-        const error = new Error(stderr || `gh exited with code ${code}`)
-        if (sawStdinEpipe) error.code = "EPIPE"
-        return reject(error)
+        const e = new Error(stderr || `gh exited ${code}`)
+        if (epipe) e.code = "EPIPE"
+        return reject(e)
       }
-      // Strip the stats block that Copilot appends
-      const clean = stdout.replace(/\n*Total usage est:[\s\S]*$/, "").trim()
-      resolve(clean)
+      resolve(stdout.replace(/\n*Total usage est:[\s\S]*$/, "").trim())
     }
 
-    child.on("error", (err) => finish(err))
-    child.on("close", (code) => finish(null, code))
-
-    // No stdin write: prompt is passed as an argument to `-p`.
+    child.on("error", fin)
+    child.on("close", (c) => fin(null, c))
     if (child.stdin) {
-      child.stdin.on("error", (err) => {
-        if (err?.code === "EPIPE") {
-          sawStdinEpipe = true
-          return
-        }
-        finish(err)
-      })
+      child.stdin.on("error", (e) => { if (e?.code === "EPIPE") { epipe = true; return } fin(e) })
       child.stdin.end()
     }
   })
 }
 
-async function callCopilot(prompt, model) {
-  let lastErr
-  for (let attempt = 0; attempt <= COPILOT_RETRIES; attempt += 1) {
-    try {
-      return await callCopilotOnce(prompt, model)
-    } catch (err) {
-      lastErr = err
-      if (!isRetriableCopilotError(err) || attempt === COPILOT_RETRIES) {
-        throw err
-      }
-      await sleep(500 * (attempt + 1))
-    }
+async function copilot(prompt, model) {
+  let last
+  for (let i = 0; i <= COPILOT_RETRIES; i++) {
+    try { return await copilotOnce(prompt, model) }
+    catch (e) { last = e; if (!isRetriable(e) || i === COPILOT_RETRIES) throw e; await sleep(500 * (i + 1)) }
   }
-  throw lastErr
+  throw last
 }
 
-// ---- Ollama provider ----
+// ---- Ollama ----
 
-const OLLAMA_BASE = process.env.OLLAMA_BASE_URL || "http://localhost:11434"
-
-async function callOllama(prompt, system, model) {
-  model = model || process.env.OLLAMA_MODEL || "qwen2.5-coder:14b"
-  const messages = []
-  if (system) messages.push({ role: "system", content: system })
-  messages.push({ role: "user", content: prompt })
+async function ollama(prompt, system, model) {
+  const msgs = []
+  if (system) msgs.push({ role: "system", content: system })
+  msgs.push({ role: "user", content: prompt })
 
   const res = await fetch(`${OLLAMA_BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: false,
-      options: { temperature: 0.1, num_predict: -1 },
-    }),
+    body: JSON.stringify({ model, messages: msgs, stream: false, options: { temperature: 0.1, num_predict: -1 } }),
   })
-  if (!res.ok) throw new Error(`Ollama returned ${res.status}: ${await res.text()}`)
+  if (!res.ok) throw new Error(`Ollama ${res.status}: ${await res.text()}`)
   const data = await res.json()
   return (data.message?.content || "").trim()
 }
 
 // ---- Public API ----
 
-const COPILOT_LIGHT_MODEL = (process.env.COPILOT_LIGHT_MODEL || "gpt-4o-mini").trim()
-const OLLAMA_LIGHT_MODEL = (process.env.OLLAMA_LIGHT_MODEL || "qwen2.5-coder:7b").trim()
-
 /**
- * Call the configured AI provider.
- * @param {string} prompt — the user/task prompt
- * @param {string} [system] — optional system prompt (used as separate system message for Ollama)
- * @param {{ light?: boolean }} [options] — if light=true, use a smaller/free model
+ * @param {string} prompt
+ * @param {string} [system] — separate system message (Ollama uses roles; Copilot prepends)
+ * @param {{ light?: boolean }} [opts]
  */
-export async function callAI(prompt, system, options = {}) {
-  const lightModel = options.light
-    ? (AI_PROVIDER === "copilot" ? COPILOT_LIGHT_MODEL : OLLAMA_LIGHT_MODEL)
-    : undefined
+export async function callAI(prompt, system, opts = {}) {
   if (AI_PROVIDER === "copilot") {
     const full = system ? system + "\n\n" + prompt : prompt
-    return callCopilot(full, lightModel)
+    return copilot(full, opts.light ? COPILOT_LIGHT_MODEL : undefined)
   }
-  return callOllama(prompt, system, lightModel)
+  return ollama(prompt, system, opts.light ? OLLAMA_LIGHT_MODEL : OLLAMA_MODEL)
 }
 
-/** Return the light model name for display purposes */
-export function getLightModelName() {
-  return AI_PROVIDER === "copilot" ? COPILOT_LIGHT_MODEL : OLLAMA_LIGHT_MODEL
+export function getProviderInfo() {
+  return {
+    provider: AI_PROVIDER,
+    model: AI_PROVIDER === "copilot" ? (COPILOT_MODEL || "(default)") : OLLAMA_MODEL,
+    lightModel: AI_PROVIDER === "copilot" ? COPILOT_LIGHT_MODEL : OLLAMA_LIGHT_MODEL,
+    retries: COPILOT_RETRIES,
+    timeout: COPILOT_TIMEOUT_MS,
+    maxPrompt: COPILOT_MAX_PROMPT_CHARS,
+  }
 }
 
 export function extractCode(raw) {
-  const fencedBlock = raw.match(/```([^\n`]*)\n([\s\S]*?)```/)
-  const language = fencedBlock?.[1]?.trim() || ""
-  const code = (fencedBlock?.[2] || raw).trim()
-  return { language, code }
-}
-
-export function formatCodeReply(raw) {
-  const { language, code } = extractCode(raw)
-  const formatted = `\`\`\`${language}\n${code}\n\`\`\``
-  return formatted.length > 1900 ? formatted.slice(0, 1900) : formatted
+  const m = raw.match(/```([^\n`]*)\n([\s\S]*?)```/)
+  return { language: m?.[1]?.trim() || "", code: (m?.[2] || raw).trim() }
 }
