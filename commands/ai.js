@@ -1,6 +1,6 @@
 import { callAI } from "../ai.js"
 import { repoQaPrompt } from "../system-prompt.js"
-import { getFileContent, listFiles, findCandidateFiles } from "../gitlab.js"
+import { getFileContent, findCandidateFiles } from "../gitlab.js"
 import { sanitize, safeEdit, pickKeywords } from "../utils/discord.js"
 
 export async function handleAI(message) {
@@ -19,48 +19,30 @@ export async function handleAI(message) {
 
     let repoContext = ""
 
-    if (process.env.LOCAL_REPO_PATH) {
-      // Fast two-phase search: path → content scoring with snippets
-      const candidates = await findCandidateFiles(keywords, { maxResults: 10, maxScan: 300, snippetLines: 3 })
+    // Two-phase search: path → content scoring with snippets (works for both local and API)
+    const candidates = await findCandidateFiles(keywords, { projectId, maxResults: 10, maxScan: 300, snippetLines: 3 })
 
-      if (candidates.length) {
-        const candidateList = candidates
-          .map((c) => `${c.path}\n${c.snippets.map((s) => "  " + s).join("\n")}`)
-          .join("\n")
-        repoContext = "\n\nTop code matches from local repo:\n" + candidateList
-      }
+    if (candidates.length) {
+      const candidateList = candidates
+        .map((c) => `${c.path}\n${c.snippets.map((s) => "  " + s).join("\n")}`)
+        .join("\n")
+      repoContext = "\n\nTop code matches:\n" + candidateList
+    }
 
-      // Read up to 4 best-matched files in parallel for deeper context
-      const toRead = candidates.slice(0, 4)
-      if (toRead.length) {
-        const snippets = (await Promise.all(
-          toRead.map(async (c) => {
-            try {
-              const content = await getFileContent(projectId, c.path)
-              return `\n### ${c.path}\n\`\`\`\n${content.slice(0, 1200)}\n\`\`\``
-            } catch { return null }
-          })
-        )).filter(Boolean)
-        if (snippets.length) {
-          repoContext += "\n\nRelevant file contents:" + snippets.join("\n")
-        }
-      }
-    } else if (projectId) {
-      // Fallback: GitLab API file list
-      const files = await listFiles(projectId)
-      const MAX_FILES = 120
-      const shown = files.slice(0, MAX_FILES)
-      const matched = files.filter((f) => keywords.some((k) => f.toLowerCase().includes(k))).slice(0, 6)
+    // Read up to 4 best-matched files in parallel for deeper context
+    const toRead = candidates.slice(0, 4)
+    if (toRead.length) {
       const snippets = (await Promise.all(
-        matched.map(async (filePath) => {
+        toRead.map(async (c) => {
           try {
-            const content = await getFileContent(projectId, filePath)
-            return `\n### ${filePath}\n\`\`\`\n${content.slice(0, 1200)}\n\`\`\``
+            const content = await getFileContent(projectId, c.path)
+            return `\n### ${c.path}\n\`\`\`\n${content.slice(0, 1200)}\n\`\`\``
           } catch { return null }
         })
       )).filter(Boolean)
-      const fileHeader = files.length > MAX_FILES ? ` (first ${MAX_FILES} of ${files.length})` : ""
-      repoContext = `\n\nRepository files${fileHeader}:\n${shown.join("\n")}${snippets.length ? "\n\nRelevant snippets:" + snippets.join("\n") : ""}`
+      if (snippets.length) {
+        repoContext += "\n\nRelevant file contents:" + snippets.join("\n")
+      }
     }
 
     const prompt = `${repoQaPrompt}\n\nYou have access to project context below. Use it to answer the question.\nIf the question asks where something is located, return likely file paths first.${repoContext}\n\nUser question:\n${userPrompt}`
