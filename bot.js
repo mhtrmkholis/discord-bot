@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits } from "discord.js"
 import { handleFix, handleContinue, handleFixInteraction, handleFollowUp, hasActiveSession } from "./commands/fix.js"
 import { handleMR } from "./commands/mr.js"
 import { handleAI } from "./commands/ai.js"
+import { handleConfig } from "./commands/config.js"
 
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN
 const ALLOWED_DISCORD_CHANNEL = process.env.ALLOWED_DISCORD_CHANNEL
@@ -32,6 +33,7 @@ client.on("messageCreate", async (message) => {
   if (message.content.startsWith("!continue")) return handleContinue(message)
   if (message.content.startsWith("!mr"))  return handleMR(message)
   if (message.content.startsWith("!ai"))  return handleAI(message)
+  if (message.content.startsWith("!config")) return handleConfig(message)
 
   // Non-command message: check if user has an active fix session
   if (hasActiveSession(message.channel.id, message.author.id)) {

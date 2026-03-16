@@ -132,6 +132,7 @@ async function callOllama(prompt, system) {
  * @param {string} [system] — optional system prompt (used as separate system message for Ollama)
  */
 export async function callAI(prompt, system) {
+  console.log(AI_PROVIDER)
   if (AI_PROVIDER === "copilot") {
     // Copilot CLI doesn't support a separate system message, so prepend it
     const full = system ? system + "\n\n" + prompt : prompt
