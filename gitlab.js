@@ -1,7 +1,13 @@
 import { Gitlab } from "@gitbeaker/node"
 import fetch from "node-fetch"
+import https from "node:https"
+import http from "node:http"
 import fs from "node:fs/promises"
 import path from "node:path"
+
+// Keep-alive agent — reuses TLS connections across API requests
+const keepAlive = { http: new http.Agent({ keepAlive: true }), https: new https.Agent({ keepAlive: true }) }
+const agent = (url) => new URL(url).protocol === "https:" ? keepAlive.https : keepAlive.http
 
 const api = new Gitlab({
   host: process.env.GITLAB_HOST || "https://gitlab.com",
@@ -30,12 +36,15 @@ async function walkLocal(root) {
   const rel = [], full = []
   const pfx = root.endsWith(path.sep) ? root : root + path.sep
   async function walk(dir) {
-    for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+    const dirs = []
+    for (const e of entries) {
       if (IGNORED_DIRS.has(e.name) || IGNORED_FILES.has(e.name)) continue
       const p = path.join(dir, e.name)
-      if (e.isDirectory()) await walk(p)
+      if (e.isDirectory()) dirs.push(walk(p))
       else if (e.isFile()) { full.push(p); rel.push(p.slice(pfx.length).split(path.sep).join("/")) }
     }
+    if (dirs.length) await Promise.all(dirs)
   }
   await walk(root)
   return { rel, full }
@@ -48,13 +57,13 @@ async function fetchTree(projectId, ref = "main") {
   const headers = { "PRIVATE-TOKEN": token }
 
   const fetchPage = async (p) => {
-    const r = await fetch(`${base}&page=${p}`, { headers })
+    const r = await fetch(`${base}&page=${p}`, { headers, agent })
     if (!r.ok) throw new Error(`GitLab tree page ${p}: ${r.status}`)
     return r.json()
   }
 
   // Page 1 → learn total pages
-  const r1 = await fetch(`${base}&page=1`, { headers })
+  const r1 = await fetch(`${base}&page=1`, { headers, agent })
   if (!r1.ok) throw new Error(`GitLab tree ${r1.status}: ${await r1.text()}`)
   const totalPages = Number(r1.headers.get("x-total-pages") || 1)
   const firstPage = await r1.json()
@@ -62,14 +71,11 @@ async function fetchTree(projectId, ref = "main") {
   const blobs = []
   for (const i of firstPage) if (i.type === "blob") blobs.push(i.path)
 
-  // Remaining pages in parallel batches of 10
-  const BATCH = 10
-  for (let start = 2; start <= totalPages; start += BATCH) {
-    const batch = []
-    for (let p = start; p < start + BATCH && p <= totalPages; p++) batch.push(fetchPage(p))
-    const results = await Promise.all(batch)
-    for (const items of results) for (const i of items) if (i.type === "blob") blobs.push(i.path)
-  }
+  // All remaining pages in parallel — keep-alive reuses TLS connections
+  const promises = []
+  for (let p = 2; p <= totalPages; p++) promises.push(fetchPage(p))
+  const pages = await Promise.all(promises)
+  for (const items of pages) for (const i of items) if (i.type === "blob") blobs.push(i.path)
   return blobs
 }
 
@@ -96,10 +102,30 @@ export function warmCache(projectId) {
 
 // ---- File I/O ----
 
+// ---- File content cache (API mode) ----
+const _contentCache = new Map()
+const CONTENT_CACHE_TTL = 3 * 60_000
+const CONTENT_CACHE_MAX = 200
+
 export async function getFileContent(projectId, filePath, ref = "main") {
   if (LOCAL_REPO) return fs.readFile(path.join(LOCAL_REPO, filePath), "utf8")
-  const f = await api.RepositoryFiles.show(projectId, filePath, ref)
-  return Buffer.from(f.content, "base64").toString("utf-8")
+  const key = `${projectId}:${ref}:${filePath}`
+  const cached = _contentCache.get(key)
+  if (cached && Date.now() - cached.ts < CONTENT_CACHE_TTL) return cached.data
+  // Direct fetch with keep-alive instead of gitbeaker (reuses TLS connections)
+  const host = process.env.GITLAB_HOST || "https://gitlab.com"
+  const token = process.env.GITLAB_TOKEN
+  const url = `${host}/api/v4/projects/${encodeURIComponent(projectId)}/repository/files/${encodeURIComponent(filePath)}?ref=${encodeURIComponent(ref)}`
+  const r = await fetch(url, { headers: { "PRIVATE-TOKEN": token }, agent })
+  if (!r.ok) throw new Error(`GitLab file ${r.status}: ${filePath}`)
+  const f = await r.json()
+  const data = Buffer.from(f.content, "base64").toString("utf-8")
+  if (_contentCache.size >= CONTENT_CACHE_MAX) {
+    const oldest = _contentCache.keys().next().value
+    _contentCache.delete(oldest)
+  }
+  _contentCache.set(key, { data, ts: Date.now() })
+  return data
 }
 
 export async function listFiles(projectId, subpath = "", ref = "main") {
@@ -117,15 +143,19 @@ export async function fileExistsInRepo(filePath, projectId) {
 
 /** Path-only candidate scoring (no I/O, instant from cache) */
 export function scoreByPath(relPaths, terms) {
+  if (!terms.length) return []
+  // Single regex matches any term — avoids per-term loop
+  const termRe = new RegExp(terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gi")
   const out = []
   for (let i = 0; i < relPaths.length; i++) {
     const lc = relPaths[i].toLowerCase()
     const ext = path.extname(relPaths[i]).toLowerCase()
     if (!SOURCE_EXTS.has(ext) || JUNK_PATH.test("/" + lc)) continue
-    const hits = terms.filter((t) => lc.includes(t)).length
-    if (!hits) continue
+    const matches = lc.match(termRe)
+    if (!matches) continue
+    const hits = new Set(matches.map(m => m.toLowerCase())).size
     let bonus = 0
-    if ([".tsx", ".jsx", ".vue"].includes(ext)) bonus += 3
+    if (ext === ".tsx" || ext === ".jsx" || ext === ".vue") bonus += 3
     if (/\/(test|__tests__)\/|\.test\.|\.spec\./.test(lc)) bonus -= 6
     if (/\/(types|interfaces)\/|\.d\.ts$/.test(lc)) bonus -= 4
     if (lc.includes("/api/")) bonus -= 3
@@ -145,13 +175,14 @@ async function scoreFileContent(projectId, relPath, fullPath, terms, snippetLine
     const lc = content.toLowerCase()
     const hits = terms.filter((t) => lc.includes(t)).length
     if (!hits) return null
-    // Grab best snippet lines
+    // Grab best snippet lines — scan first 800 lines
     const lines = content.split(/\r?\n/)
+    const limit = Math.min(lines.length, 800)
+    const termRe = new RegExp(terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gi")
     const scored = []
-    for (let i = 0; i < Math.min(lines.length, 800); i++) {
-      const ll = lines[i].toLowerCase()
-      const m = terms.filter((t) => ll.includes(t)).length
-      if (m > 0) scored.push({ score: m, text: lines[i].trim().slice(0, 200) })
+    for (let i = 0; i < limit; i++) {
+      const m = lines[i].match(termRe)
+      if (m) scored.push({ score: new Set(m.map(x => x.toLowerCase())).size, text: lines[i].trim().slice(0, 200) })
     }
     scored.sort((a, b) => b.score - a.score)
     return { contentHits: hits, snippets: scored.slice(0, snippetLines).map((s) => s.text) }
@@ -176,8 +207,8 @@ export async function findCandidateFiles(keywords, opts = {}) {
   const { relPaths, fullPaths } = await getCachedTree(projectId)
   const pathScored = scoreByPath(relPaths, terms).slice(0, maxScan)
 
-  // Phase 2: parallel content scoring in batches
-  const BATCH = LOCAL_REPO ? 50 : 10
+  // Phase 2: parallel content scoring — larger batches, early exit
+  const BATCH = LOCAL_REPO ? 100 : 15
   const results = []
   for (let b = 0; b < pathScored.length; b += BATCH) {
     const batch = pathScored.slice(b, b + BATCH)
@@ -187,6 +218,8 @@ export async function findCandidateFiles(keywords, opts = {}) {
       return { path: relPaths[idx], score: pathScore + r.contentHits * 3, snippets: r.snippets }
     }))
     for (const r of res) if (r) results.push(r)
+    // Early exit: enough high-quality results found
+    if (results.length >= maxResults * 2) break
   }
 
   results.sort((a, b) => b.score - a.score)
