@@ -9,11 +9,11 @@ Merge Requests — all from a single command.
 
 ## Features
 
-| Command | Description |
-| ------- | ----------- |
-| `!ai <prompt>` | Ask the AI anything — replies with a formatted code block. |
+| Command                  | Description                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------- |
+| `!ai <prompt>`           | Ask the AI anything — replies with a formatted code block.                                          |
 | `!fix <bug description>` | Full pipeline: identify file → fetch from GitLab → AI fix → branch → commit → MR → reply with link. |
-| `!mr <json>` | Manually create a GitLab Merge Request from a JSON payload. |
+| `!mr <json>`             | Manually create a GitLab Merge Request from a JSON payload.                                         |
 
 ## Project Structure
 
@@ -53,18 +53,18 @@ npm start
 
 Copy `.env.example` → `.env` and fill in:
 
-| Variable | Required | Description |
-| -------- | -------- | ----------- |
-| `DISCORD_TOKEN` | yes | Bot token from Discord Developer Portal |
-| `ALLOWED_DISCORD_CHANNEL` | yes | Channel ID the bot listens in |
-| `GITLAB_HOST` | yes | GitLab instance URL (e.g. `https://gitlab.com`) |
-| `GITLAB_TOKEN` | yes | Personal access token with `api` scope |
-| `GITLAB_PROJECT_ID` | yes | Numeric project ID (Settings → General) |
-| `AI_PROVIDER` | no | `copilot` (default) or `ollama` |
-| `GH_PATH` | no | Absolute path to `gh` binary |
-| `GH_TOKEN` | no | GitHub token for Copilot auth |
-| `COPILOT_MODEL` | no | Model name (see list in `.env.example`) |
-| `OLLAMA_MODEL` | no | Ollama model name (default: `qwen2.5-coder:14b`) |
+| Variable                  | Required | Description                                      |
+| ------------------------- | -------- | ------------------------------------------------ |
+| `DISCORD_TOKEN`           | yes      | Bot token from Discord Developer Portal          |
+| `ALLOWED_DISCORD_CHANNEL` | yes      | Channel ID the bot listens in                    |
+| `GITLAB_HOST`             | yes      | GitLab instance URL (e.g. `https://gitlab.com`)  |
+| `GITLAB_TOKEN`            | yes      | Personal access token with `api` scope           |
+| `GITLAB_PROJECT_ID`       | yes      | Numeric project ID (Settings → General)          |
+| `AI_PROVIDER`             | no       | `copilot` (default) or `ollama`                  |
+| `GH_PATH`                 | no       | Absolute path to `gh` binary                     |
+| `GH_TOKEN`                | no       | GitHub token for Copilot auth                    |
+| `COPILOT_MODEL`           | no       | Model name (see list in `.env.example`)          |
+| `OLLAMA_MODEL`            | no       | Ollama model name (default: `qwen2.5-coder:14b`) |
 
 ## Usage
 

@@ -1,29 +1,102 @@
-import { execFile } from "node:child_process"
+import { spawn } from "node:child_process"
 import fetch from "node-fetch"
 
 const AI_PROVIDER = (process.env.AI_PROVIDER || "copilot").toLowerCase()
 const COPILOT_MODEL = (process.env.COPILOT_MODEL || "").trim()
+const COPILOT_RETRIES = Number(process.env.COPILOT_RETRIES || 2)
+const COPILOT_TIMEOUT_MS = Number(process.env.COPILOT_TIMEOUT_MS || 120_000)
+const COPILOT_MAX_PROMPT_CHARS = Number(process.env.COPILOT_MAX_PROMPT_CHARS || 50_000)
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isRetriableCopilotError(err) {
+  const msg = String(err?.message || "").toLowerCase()
+  const code = String(err?.code || "").toUpperCase()
+  return code === "EPIPE" || code === "ETIMEDOUT" || msg.includes("epipe") || msg.includes("timed out")
+}
 
 // ---- Copilot CLI provider ----
 
-function callCopilot(prompt) {
+function callCopilotOnce(prompt) {
   return new Promise((resolve, reject) => {
     const ghPath = process.env.GH_PATH || "gh"
-    const args = ["copilot", "-p", prompt, "--allow-all-tools"]
+    const safePrompt = String(prompt || "").slice(0, COPILOT_MAX_PROMPT_CHARS)
+    const args = ["copilot", "-p", safePrompt, "--allow-all-tools", "--silent"]
     if (COPILOT_MODEL) {
       args.push("--model", COPILOT_MODEL)
     }
 
-    execFile(ghPath, args, {
-      timeout: 120_000,
-      maxBuffer: 1024 * 1024,
-    }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr || err.message))
+    const child = spawn(ghPath, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+
+    let stdout = ""
+    let stderr = ""
+    let settled = false
+    let sawStdinEpipe = false
+
+    const timeout = setTimeout(() => {
+      try {
+        child.kill("SIGTERM")
+      } catch {
+        // Ignore kill failures
+      }
+      const err = new Error(`gh copilot timed out after ${COPILOT_TIMEOUT_MS}ms`)
+      err.code = "ETIMEDOUT"
+      finish(err)
+    }, COPILOT_TIMEOUT_MS)
+
+    child.stdout.on("data", (d) => { stdout += d })
+    child.stderr.on("data", (d) => { stderr += d })
+
+    const finish = (err, code) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      if (err) return reject(err)
+      if (code !== 0) {
+        const error = new Error(stderr || `gh exited with code ${code}`)
+        if (sawStdinEpipe) error.code = "EPIPE"
+        return reject(error)
+      }
       // Strip the stats block that Copilot appends
       const clean = stdout.replace(/\n*Total usage est:[\s\S]*$/, "").trim()
       resolve(clean)
-    })
+    }
+
+    child.on("error", (err) => finish(err))
+    child.on("close", (code) => finish(null, code))
+
+    // No stdin write: prompt is passed as an argument to `-p`.
+    if (child.stdin) {
+      child.stdin.on("error", (err) => {
+        if (err?.code === "EPIPE") {
+          sawStdinEpipe = true
+          return
+        }
+        finish(err)
+      })
+      child.stdin.end()
+    }
   })
+}
+
+async function callCopilot(prompt) {
+  let lastErr
+  for (let attempt = 0; attempt <= COPILOT_RETRIES; attempt += 1) {
+    try {
+      return await callCopilotOnce(prompt)
+    } catch (err) {
+      lastErr = err
+      if (!isRetriableCopilotError(err) || attempt === COPILOT_RETRIES) {
+        throw err
+      }
+      await sleep(500 * (attempt + 1))
+    }
+  }
+  throw lastErr
 }
 
 // ---- Ollama provider ----
